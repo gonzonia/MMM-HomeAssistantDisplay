@@ -5,8 +5,9 @@
  * MIT Licensed.
  */
 var backoff = require('backoff')
+const http = require("http");
+const https = require("https");
 const NodeHelper = require("node_helper");
-const HomeAssistant = require("homeassistant");
 const HomeAssistantWS = require("homeassistant-ws");
 const Logger = require("./helpers/Logger");
 util = require('util'),
@@ -89,12 +90,57 @@ function socketNotificationReceived(notification, payload) {
 	}
 }
 
+/**
+ * Render a template through Home Assistant's REST API (POST /api/template).
+ * Resolves with the rendered text as a string; rejects on network errors,
+ * timeouts and non-2xx responses.
+ */
+function renderTemplate(connectionConfig, template) {
+	return new Promise((resolve, reject) => {
+		const body = JSON.stringify({ template });
+		const transport = connectionConfig.useTLS ? https : http;
+		const options = {
+			host: connectionConfig.host,
+			port: connectionConfig.port || 8123,
+			path: "/api/template",
+			method: "POST",
+			headers: {
+				"Authorization": `Bearer ${connectionConfig.token}`,
+				"Content-Type": "application/json",
+				"Content-Length": Buffer.byteLength(body),
+			},
+		};
+		if (connectionConfig.useTLS) {
+			options.rejectUnauthorized = !connectionConfig.ignoreCert;
+		}
+		const req = transport.request(options, (res) => {
+			let data = "";
+			res.setEncoding("utf8");
+			res.on("data", (chunk) => {
+				data += chunk;
+			});
+			res.on("end", () => {
+				if (res.statusCode < 200 || res.statusCode >= 300) {
+					reject(new Error(`Home Assistant returned HTTP ${res.statusCode}: ${data}`));
+					return;
+				}
+				resolve(data);
+			});
+		});
+		req.setTimeout(10000, () => {
+			req.destroy(new Error("Template request timed out"));
+		});
+		req.on("error", reject);
+		req.end(body);
+	});
+}
+
 async function evaluateTemplate(payload) {
 	if (config.debuglogging) {
 		this.logger.debug(`Evaluating template for ${payload.template}`);
 	}
-	const hass = this.connections[payload.identifier].hass;
-	const response = await hass.templates.render(payload.template);
+	const { connectionConfig } = this.connections[payload.identifier];
+	const response = await renderTemplate(connectionConfig, payload.template);
 	return {
 		identifier: payload.identifier,
 		render: response
@@ -121,10 +167,9 @@ async function connect(payload) {
 		ignoreCert: payload.ignoreCert,
 		useTLS: payload.useTLS,
 	};
-	const hass = new HomeAssistant({...connectionConfig, host: this.buildHttpUrl(connectionConfig)});
 	this.logger.info(`HomeAssistant connected for ${payload.identifier}`);
 	this.connections[payload.identifier] = {
-		hass,
+		connectionConfig,
 		entities: []
 	};
 
