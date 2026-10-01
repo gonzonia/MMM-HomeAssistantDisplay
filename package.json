@@ -23,7 +23,6 @@
   "dependencies": {
     "@mdi/font": "latest",
     "backoff": "^2.5.0",
-    "homeassistant": "^0.2.0",
     "homeassistant-ws": "^0.2.1"
   },
   "devDependencies": {
